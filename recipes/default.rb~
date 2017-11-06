@@ -1,0 +1,476 @@
+#
+# Cookbook Name:: alb_install
+# Recipe:: default
+#
+# Copyright 2013, Anagix Corp.
+#
+# All rights reserved - Do Not Redistribute
+#
+
+if node[:platform_family] == 'rhel'
+  include_recipe 'yum-epel' 
+elsif ['ubuntu', 'debian', 'linuxmint'].include? node[:platform]
+  include_recipe 'apt::default'
+end
+include_recipe 'my_apache2_for_alb2'
+include_recipe 'build-essential'
+include_recipe 'git'
+include_recipe 'selinux::disabled'
+
+#### Install alb and alta ####
+
+if RUBY_PLATFORM =~ /darwin/
+  alb_dist_path = 'http://alb.anagix.com:8180/dist/MacOSX/'
+  install_path = '/Users/anagix/anagix_tools'
+elsif RUBY_PLATFORM =~ /freebsd/
+  alb_dist_path = 'http://alb.anagix.com:8180/dist/freebsd/'
+  install_path = '/usr/local/anagix_tools'
+elsif RUBY_PLATFORM =~ /x86_64-linux/
+  alb_dist_path = 'http://alb.anagix.com:8180/dist/x86_64/'
+  install_path = '/usr/local/anagix_tools'
+else # elsif RUBY_PLATFORM =~ /i686-linux/
+  alb_dist_path = 'http://alb.anagix.com:8180/dist/'
+  install_path = '/usr/local/anagix_tools'
+end
+
+unless RUBY_PLATFORM =~ /darwin/
+  directory install_path do
+    owner 'anagix'
+    group 'anagix'
+    mode 00755
+    action :create
+  end
+  
+  link File.join(node['anagix_home'], '/anagix_tools') do
+    owner 'anagix'
+    to install_path
+  end unless File.exist? File.join(node['anagix_home'], '/anagix_tools')
+
+  link '/var/www/alb_docs' do
+    owner 'anagix'
+    to File.join(install_path, 'alb2/public/alb_docs')
+  end
+end
+
+check_point = {
+  'alb2.tgz' => File.join(install_path, 'alb2/alb.so'),
+  'alb_lib.tgz' => File.join(install_path, 'lib/ruby/site_ruby/alb_version.rb'),
+  'ade_express.tgz' => File.join(install_path, 'ruby/site_ruby/alb_gear.rb'), 
+  'alta.tgz'=> File.join(install_path, 'ruby/site_ruby/alta.rb')
+}
+
+
+tgz_packs = %w[alb2.tgz alb_lib.tgz ade_express.tgz alta.tgz alb_docs.tgz]
+
+tgz_packs.each{|src|
+  remote_file File.join('/tmp', src)  do
+    source File.join alb_dist_path, src
+    owner 'anagix'
+    group 'anagix'
+    action :create
+    not_if { ::File.exists?(File.join '/tmp', src) }
+  end
+
+  unless check_point[src] && File.exists?(check_point[src]) && File.exists?(File.join '/tmp', src)
+    bash "extract #{src}" do
+      cwd File.join(install_path, '..')
+      user 'anagix'
+      code <<-EOH
+        tar xzf #{File.join '/tmp', src}
+        EOH
+    end
+  end
+}
+
+directory File.join(install_path, 'src') do
+  owner 'anagix'
+  group 'anagix'
+  mode 00755
+  action :create
+end
+
+##### create system/repository #####
+
+directory File.join(install_path, 'alb2/public/system') do
+  owner 'anagix'
+  group 'anagix'
+  mode 00755
+  action :create
+end
+
+directory File.join(install_path, 'alb2/public/system/repository') do
+  owner 'anagix'
+  group 'anagix'
+  mode 00755
+#  recursive true  --- recursive does not seem working correctly for ownership setting
+#  action :create_if_missing
+  action :create # no create_missing for directory!
+end
+
+case node[:platform]
+when 'ubuntu', 'debian', 'linuxmint'
+#  package 'libcairo2-dev' do # install cairo development package for gem cairo
+#    action :install
+#  end
+
+#  packages = ['libcairo2-dev', 'ruby-dev', 'libicu-dev', 'libmysqlclient-dev', 'libsqlite3-dev', 'ruby-shadow']
+  packages = ['libxml2-dev', 'libxslt1-dev', 'libcairo2-dev', 'libicu-dev', 'libmysqlclient-dev', 'libsqlite3-dev']
+
+  packages.each{|p|
+    package p do
+      action :install
+    end
+  }
+
+  link '/usr/lib/libgdbm.so.2' do
+    to "/usr/lib/#{RUBY_PLATFORM =~ /x86_64-linux/? 'x86_64' : 'i386'}-linux-gnu/libgdbm.so.3.0.0"
+  end
+
+  package 'vnc4server' do
+    action :install
+  end
+
+  template '/etc/init.d/vncserver' do
+    source 'vncserver'
+    owner 'root'
+    group 'root'
+    mode 00755
+    action :create
+  end
+
+  directory '/etc/vncserver' do
+    owner 'root'
+    group 'root'
+    mode 00644
+    action :create
+  end
+
+  template '/etc/vncserver/vncservers.conf' do
+    source 'vncservers.conf'
+    owner 'root'
+    group 'root'
+    mode 00644
+    action :create
+    ignore_failure true
+  end
+
+when 'centos', 'redhat'
+  execute "yum check-update" do
+    command "yum check-update"
+    ignore_failure true
+    action :nothing
+  end
+
+#  packages = %w[ cairo-devel gdbm vnc-server]  ### git is not in centos 5.7 repo!!!
+                                                # but git cookbook makes it. 
+                                                # so, changed alb_server role to include git cookbook
+  packages = %w[ which patch libxml2-devel libxslt-devel cairo-devel gdbm ruby-devel sqlite-devel nodejs ]
+  if node[:platform_version] < '6' # for centos 5 because charlock_holmes depends libicu >= 4.2
+
+    remote_file "/tmp/icu4c-54_1-src.tgz" do
+      source "http://download.icu-project.org/files/icu4c/54.1/icu4c-54_1-src.tgz"
+      notifies :run, "bash[install libicu]", :immediately
+    end
+    
+    bash "install libicu" do # libicu will be installed under /usr/local/lib
+      user "root"
+      cwd "/tmp"
+      code <<-EOH
+    tar -zxf icu4c-54_1-src.tgz
+    (cd icu/source && ./configure && make && make install)
+  EOH
+      action :nothing
+    end
+    packages << 'vnc-server'
+    packages << 'vixie-cron'
+
+    bash "prepare to install nodejs" do
+      user "root"
+      code <<-EOH
+          curl -sL https://rpm.nodesource.com/setup | bash -
+          EOH
+      action :nothing
+    end
+  elsif node[:platform_version] >= '7'
+    packages << 'libicu-devel'
+    packages << 'vnc-server'
+    packages << 'cronie' 
+  else
+    packages << 'libicu-devel'
+    packages << 'tigervnc-server'
+    packages << 'cronie' # replaced 'vixie-cron'
+  end
+
+  packages.each{|p|
+    package p do
+      action :install
+    end
+  }
+
+  template '/etc/sysconfig/vncservers' do
+    source 'vncservers.conf'
+    owner 'root'
+    group 'root'
+    mode 00644
+    action :create
+  end
+end
+
+##### intall ploticus #####
+
+remote_file File.join(install_path, 'src/ploticus242_src.tar.gz') do
+  source 'http://sourceforge.net/projects/ploticus/files/ploticus/2.42/ploticus242_src.tar.gz'
+  owner 'anagix'
+  group 'anagix'
+  action :create
+  not_if { ::File.exists? File.join(install_path, 'src/ploticus242_src.tar.gz') }
+end
+
+# ploticus needs zlib-dev (zlib.h) which seems installed via cairo-dev
+
+bash 'make ploticus' do
+  cwd File.join(install_path, 'src')
+  user 'anagix'
+  code <<-EOH
+	tar xzf ploticus242_src.tar.gz
+	(cd ploticus242/src; sed -i -e 's%/usr/local/bin%#{File.join install_path, 'bin'}%' Makefile; make && make install)
+	ln -s ploticus242 pl
+        EOH
+  not_if { ::File.exist? File.join install_path, 'bin/pl' }
+end
+
+link File.join(install_path, 'bin/ploticus') do
+  owner 'anagix'
+  to File.join(install_path, 'bin/pl')
+  not_if "test -L #{File.join(install_path, 'bin/ploticus')}"
+end
+
+# note: twm will become x-window-manager in .vnc/xstartup 
+
+packages = %w[xterm tcsh wget zip unzip git nodejs ]
+if node[:platform_version] < '7'
+  packages << 'twm'
+else  # twm is not available after centos 7 see https://onemoretech.wordpress.com/2014/08/24/twm-on-centos-7/
+  if node['kernel']['machine'] == "i686"
+    rpm_arch = "i386"
+  else
+    rpm_arch = node['kernel']['machine']
+  end
+  remote_file "/tmp/xorg-x11-twm-1.0.3-5.1.el6.#{rpm_arch}.rpm" do
+    source "http://ftp.riken.jp/Linux/centos/6/os/#{rpm_arch}/Packages/xorg-x11-twm-1.0.3-5.1.el6.#{rpm_arch}.rpm"
+    notifies :run, "bash[install twm]", :immediately
+  end
+
+  bash "install twm" do
+    user "root"
+    cwd "/tmp"
+    code <<-EOH
+      rpm -ivh --nodeps xorg-x11-twm-1.0.3-5.1.el6.#{rpm_arch}.rpm
+  EOH
+    action :nothing
+  end
+end
+
+packages.each{|p|
+  package p do
+    action :install
+  end
+}
+
+directory File.join(node['anagix_home'], '.vnc') do
+  owner 'anagix'
+  group 'anagix'
+  mode 00744
+  action :create
+end
+
+cookbook_file 'passwd' do
+  owner 'anagix'
+  group 'anagix'
+  mode 00600
+  path File.join(node['anagix_home'], '.vnc/passwd')
+  action :create_if_missing
+end
+
+if node[:platform_family] == 'rhel' && node[:platform_version] >= '7.0'
+  template '/etc/systemd/system/vncserver@:1.service' do
+    source 'vncserver@:1.service'
+    owner 'anagix'
+    group 'anagix'
+  end
+  service "vncserver@:1" do
+    action [:enable, :start]
+  end
+else
+  bash "start vncserver" do
+    not_if("ps cax | grep Xvnc", :user => 'anagix')
+    user 'root'
+    cwd '/etc/init.d'
+    code <<-EOH
+    ./vncserver start
+    EOH
+    ignore_failure true
+  end
+end
+
+# ruby-shadow to set password for anagix
+
+['ruby-shadow', 'bundle'].each{|g|
+  if File.exist? '/opt/chef/embedded/bin/ruby'
+    gem_package g do
+      gem_binary("/opt/chef/embedded/bin/gem")
+      package_name g
+      options "--no-ri --no-rdoc"
+    end
+  else
+    gem_package g do
+      package_name g
+      options "--no-ri --no-rdoc"
+    end
+  end
+} 
+
+template File.join(install_path, 'alb2/config/database.yml') do
+  source 'database.yml.erb'
+  owner 'anagix'
+  group 'anagix'
+end
+
+password = 'anagixalb'
+
+if node[:platform_family] == 'debian'
+  mysql_version = '5.5'
+  mysql_version = '5.7' if node[:platform_version] >= '16.04'
+  mysql_service 'default' do
+    port '3306'
+    version '5.7'
+    initial_root_password password
+#    provider Chef::Provider::MysqlServiceSystemd
+    action [:create, :start]
+    ignore_failure true
+  end
+else  #### mysql 5.5 would not work on centos 5
+  mysql_service 'default' do
+    port '3306'
+    version '5.6'
+    initial_root_password password
+    provider Chef::Provider::MysqlService::Sysvinit # see http://stackoverflow.com/questions/31051890/chef-failed-to-install-mysql-no-resouce-method-or-variable-named-create
+    action [:create, :start]
+  end
+end
+
+mysql_client 'default' do # this is needed to install development pkg
+  action :create
+end
+
+mysql_config 'default' do
+  source 'mysite.cnf.erb'
+  notifies :restart, 'mysql_service[default]'
+  action :create
+end
+
+link '/etc/my.cnf' do
+  owner 'root'
+  mode 00644
+  to '/etc/mysql-default/my.cnf'
+  not_if 'test -L /etc/my.cnf'
+end
+
+# Note: mysql must be installed before gem install mysql2
+# remove mysql2 and charlock_holmes gems because they might be linked w/ wrong version of mysql
+
+true and bash 'alb_setup' do  # centos 5.7 raise error
+  user 'anagix'
+  cwd File.join(install_path, 'alb2')
+  environment 'HOME' => node['anagix_home']
+  code <<-EOH
+    export PATH=/opt/chef/embedded/bin:#{install_path}/qt-4/bin:#{install_path}/bin:$PATH
+    gem uninstall -i /usr/local/anagix_tools/alb2/vendor/bundle/ruby/2.1.0 mysql2
+    gem uninstall -i /usr/local/anagix_tools/alb2/vendor/bundle/ruby/2.1.0 charlock_holmes
+    EOH
+ if node[:platform] == 'ubuntu' && node[:platform_version] == '14.04' 
+    code << "bundle config build.nokogiri --use-system-libraries # needed for ubuntu 14.04\n"
+ end
+ code << " bundle install --path vendor/bundle\n"
+end
+
+# Note: mysql2 gem is required to update ALB database (NOT IMPLEMENTED YET!!!)
+
+password = "-p\"#{password}\"" if password && password != ''
+
+true and bash "create alb_production mysql database" do  ### centos 5.7 raise error in rake db_migrate
+  not_if("mysql -u root #{password} -e 'show databases' | grep alb_production", :user => 'root')
+  user 'root' # must not be anagix because of /var/lib/mysql-default and /etc/mysql-default permissions
+  cwd File.join(install_path, 'alb2')
+  code <<-EOH
+    mysql -u root #{password} -e 'create database alb_production default character set=utf8'
+    # export PATH=/opt/chef/embedded/bin:#{install_path}/qt-4/bin:#{install_path}/bin:$PATH
+    # RAILS_ENV=production rake db_migrate
+    EOH
+end
+
+bash "migrate database" do
+  user 'anagix'
+  cwd File.join(install_path, 'alb2')
+  environment 'HOME' => node['anagix_home']
+  code <<-EOH
+    export PATH=/opt/chef/embedded/bin:#{install_path}/qt-4/bin:#{install_path}/bin:$PATH
+    tar xzf db_migrate.tgz
+    RAILS_ENV=production bundle exec rake db:migrate
+    rm -r db/migrate; rm db/schema.rb
+    EOH
+end
+
+template '/etc/init.d/alb2_svc' do
+  source 'alb2_svc'
+  owner 'anagix'
+  group 'anagix'
+  mode 00755
+  action :create
+end
+
+bash "start ALB server" do
+  not_if("ps cax | grep alb", :user => 'anagix')
+  user 'root'
+  cwd '/etc/init.d'
+  code <<-EOH
+    ./alb2_svc start
+    EOH
+  notifies :restart, "service[apache2]"
+end
+
+case node[:platform]
+when 'ubuntu', 'debian', 'linuxmint'
+  package 'sysv-rc-conf' do
+    action :install
+  end
+
+  execute "alb2_svc on" do
+    command "/usr/sbin/sysv-rc-conf alb2_svc on"
+    ignore_failure true
+  end
+
+  execute "vncserver on" do
+    command "/usr/sbin/sysv-rc-conf vncserver on"
+    ignore_failure true
+  end
+
+when 'centos', 'redhat'
+  execute "alb2_svc on" do
+    command "/sbin/chkconfig alb2_svc on"
+    ignore_failure true
+  end
+
+  if node[:platform_version] < '7.0' 
+    execute "vncserver on" do
+      command "/sbin/chkconfig vncserver on"
+      ignore_failure true
+    end
+  end
+end
+
+service "apache2"
+
+include_recipe 'gyazo'
+include_recipe 'alb_db_bkup'
+

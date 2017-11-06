@@ -1,0 +1,50 @@
+#!/bin/bash
+# chkconfig: 345 98 20
+# description: Start up ALB2 service
+# processname: ruby
+
+#ALBHOME=/usr/local/anagix_tools/alb
+ALBHOME=/usr/local/anagix_tools/alb2
+
+LICFILE=$ALBHOME/license.dat
+LOGFILE=$ALBHOME/log/production.log
+
+export MAIL_NOT_WORKING=yes  # please uncomment if sign up validation via email is desirable
+
+# export CDS_AUTO_64BIT=ALL
+# export CDS_LIC_FILE=
+# export MMSIMHOME=/opt/eda/cadence/current/MMSIM12
+# export PATH=$MMSIMHOME/bin:$PATH
+
+start(){
+    if [ -f $LICFILE ] ; then
+	if [ -f $LOGFILE ] ; then
+            DATESTR=`/bin/date '+%y%m%d%H%M%S'`
+	    /bin/mv $LOGFILE $LOGFILE.$DATESTR
+	fi
+	#     /bin/su anagix -c "cd $ALBHOME; export LD_LIBRARY_PATH=/usr/local/anagix_tools/lib; ./alb -e production >>$LOGFILE 2>&1 &"
+	if [ -f /usr/local/share/chruby/chruby.sh ] ; then
+ 	   /bin/su anagix -c "cd $ALBHOME; export LD_LIBRARY_PATH=/usr/local/anagix_tools/lib; source /usr/local/share/chruby/chruby.sh; chruby 2.0; bundle exec rails s -e production >>$LOGFILE 2>&1 &";
+        else
+ 	   /bin/su anagix -c "cd $ALBHOME; export PATH=/opt/chef/embedded/bin:$PATH; export LD_LIBRARY_PATH=/usr/local/anagix_tools/lib; bundle exec rails s -e production >>$LOGFILE 2>&1 &";
+        fi
+    fi
+    return 0
+}
+stop(){
+    #  /usr/bin/pkill -u anagix alb 2> /dev/null || /bin/echo ...Stopped.
+    /usr/bin/pkill -u anagix -f 'bin/rails s -e production' 2> /dev/null || /bin/echo ...Stopped.
+    return 0
+}
+case "$1" in
+    start)
+	start
+	;;
+    stop)
+	stop
+	;;
+esac
+exit 0
+
+
+
