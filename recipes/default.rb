@@ -13,7 +13,7 @@ elsif ['ubuntu', 'debian', 'linuxmint'].include? node[:platform]
   include_recipe 'apt::default'
 end
 include_recipe 'my_apache2_for_alb2'
-include_recipe 'build-essential'
+# include_recipe 'build-essential'
 # include_recipe 'git'
 include_recipe 'selinux::disabled'
 

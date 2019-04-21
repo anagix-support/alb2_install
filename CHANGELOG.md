@@ -21,3 +21,4 @@ This file is used to list changes made in each version of alb_server.
 ## 0.2.0: tested for AWS
 	* changed PATH=/opt/chef/embedded/bin: to PATH=#{node['languages']['ruby']['bin_dir']}:
 	* node[:remote_mysql] introduced to flag that mysql server is available remote
+## 0.2.1: build-essential no longer needed because chef includes it
